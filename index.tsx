@@ -279,7 +279,7 @@ const App = () => {
               animate={{ x: 0 }}
               exit={{ x: panelOnRight ? '100%' : '-100%' }}
               transition={{ type: "spring", stiffness: 300, damping: 30 }}
-              className={`absolute top-0 ${panelOnRight ? 'right-0 border-l' : 'left-0 border-r'} h-full w-full md:w-[600px] z-50 bg-[#0a0a0a] border-white/10 shadow-2xl overflow-y-auto`}
+              className={`absolute top-0 ${panelOnRight ? 'right-0 border-l' : 'left-0 border-r'} h-full w-full md:w-[600px] z-50 bg-black/75 backdrop-blur-3xl saturate-200 border-white/10 shadow-2xl overflow-y-auto`}
               onClick={e => e.stopPropagation()}
             >
               <div className="p-8 md:p-12 relative min-h-full">

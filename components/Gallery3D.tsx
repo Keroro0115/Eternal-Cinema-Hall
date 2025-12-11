@@ -30,9 +30,6 @@ export const Gallery3D: React.FC<Gallery3DProps> = ({ movies, scrollPos, isDetai
   const cameraGroup = useRef<THREE.Group>(null);
   const floorRef = useRef<THREE.Mesh>(null);
   
-  // Ref to track camera offset for UI shifting
-  const cameraOffset = useRef(0);
-  
   // Get current active color for particles
   const currentIndex = Math.round(scrollPos);
   const safeIndex = Math.min(Math.max(currentIndex, 0), movies.length - 1);
@@ -45,44 +42,52 @@ export const Gallery3D: React.FC<Gallery3DProps> = ({ movies, scrollPos, isDetai
     // 1. Smoothly interpolate scroll position
     smoothScroll.current = THREE.MathUtils.lerp(smoothScroll.current, scrollPos, safeDelta * 3);
 
-    // 2. Camera Positioning Base Calculation
-    const cameraT = smoothScroll.current - 1.2; 
-    const baseCamPos = getPathPoint(cameraT);
-    baseCamPos.y += 1.5;
+    // 2. Camera Logic
+    // Standard "Corridor" Path Calculation
+    const pathT = smoothScroll.current - 1.2; 
+    const corridorCamPos = getPathPoint(pathT);
+    corridorCamPos.y += 1.5;
 
-    // --- UI OFFSET LOGIC ---
-    // Shift camera X to make room for the sidebar.
-    // If movie is on Left (index even), UI is on Right, Camera shifts Left (Negative X relative to look).
-    // If movie is on Right (index odd), UI is on Left, Camera shifts Right (Positive X relative to look).
+    // "Details" Target Calculation
+    // We calculate exactly where the camera needs to be to frame the movie correctly
+    const activeIdx = Math.round(scrollPos);
+    const isLeftMovie = activeIdx % 2 === 0;
     
-    // Determine target offset direction based on current movie index side
-    // Even index = Left Side Movie -> UI on Right -> Shift Camera Left (negative)
-    // Odd index = Right Side Movie -> UI on Left -> Shift Camera Right (positive)
-    const isLeftMovie = Math.round(scrollPos) % 2 === 0;
-    const offsetMagnitude = isDetailsOpen ? 2.5 : 0;
-    const targetOffset = isLeftMovie ? offsetMagnitude : -offsetMagnitude;
+    // Calculate the World Position of the active movie
+    const activePathPos = getPathPoint(activeIdx);
+    // Note: This matches the loop logic below for movie placement
+    const activeMovieX = activePathPos.x + (isLeftMovie ? -PATH_WIDTH : PATH_WIDTH);
 
-    cameraOffset.current = THREE.MathUtils.lerp(cameraOffset.current, targetOffset, safeDelta * 4);
-    
-    // Apply offset to camera position
-    baseCamPos.x += cameraOffset.current;
-    
-    // Apply to camera
-    camera.position.copy(baseCamPos);
+    // Ideally, we want the movie to appear on the opposite side of the text panel.
+    // Left Movie -> Panel Right -> Movie should be on Left Screen -> Cam should be Right of Movie.
+    // Right Movie -> Panel Left -> Movie should be on Right Screen -> Cam should be Left of Movie.
+    // We use a fixed offset of 2.5 units to frame it perfectly.
+    const detailCamX = isLeftMovie ? (activeMovieX + 2.5) : (activeMovieX - 2.5);
+
+    // Determine target X
+    const targetX = isDetailsOpen ? detailCamX : corridorCamPos.x;
+
+    // Apply Camera Position
+    // We blend X for the transition, but Y and Z largely follow the path to maintain the "ride" feel
+    camera.position.x = THREE.MathUtils.lerp(camera.position.x, targetX, safeDelta * 4);
+    camera.position.y = THREE.MathUtils.lerp(camera.position.y, corridorCamPos.y, safeDelta * 4);
+    camera.position.z = THREE.MathUtils.lerp(camera.position.z, corridorCamPos.z, safeDelta * 4);
 
     // 3. Camera LookAt
     const lookT = smoothScroll.current + 3; 
     const lookAtPos = getPathPoint(lookT);
     lookAtPos.x += Math.sin(state.clock.elapsedTime * 0.2) * 2;
     
-    // Also shift lookAt slightly to keep framing natural
-    lookAtPos.x += cameraOffset.current * 0.8;
+    // When details are open, slightly adjust lookAt to face the movie better, but keep it subtle
+    if (isDetailsOpen) {
+        lookAtPos.x = THREE.MathUtils.lerp(lookAtPos.x, activeMovieX, safeDelta * 2);
+    }
     
     camera.lookAt(lookAtPos);
 
     // 4. Update Light Group
     if (cameraGroup.current) {
-        cameraGroup.current.position.copy(baseCamPos);
+        cameraGroup.current.position.copy(camera.position);
         cameraGroup.current.lookAt(lookAtPos);
     }
 
@@ -121,7 +126,7 @@ export const Gallery3D: React.FC<Gallery3DProps> = ({ movies, scrollPos, isDetai
         ref={floorRef} 
         rotation={[-Math.PI / 2, 0, 0]} 
         position={[0, -4, 0]}
-        raycast={() => null} // CRITICAL: Disable raycast so floor doesn't block clicks
+        raycast={() => null} // Disable raycast
       >
         <planeGeometry args={[200, 200]} />
         <meshStandardMaterial 
@@ -211,7 +216,6 @@ const CorridorStructure = ({ length }: { length: number }) => {
 
                 return (
                     <group key={i} position={[pos.x, 0, pos.z]} rotation={rot}>
-                        {/* Raycast null on environment to prevent click blocking */}
                         <mesh position={[0, -3.9, 0]} rotation={[-Math.PI/2, 0, 0]} raycast={() => null}>
                             <ringGeometry args={[5, 5.2, 32]} />
                             <meshBasicMaterial color="#333" opacity={0.3} transparent />
@@ -304,7 +308,7 @@ const AtmosphereParticles = ({ targetColor }: { targetColor: string }) => {
         }
         meshRef.current.instanceMatrix.needsUpdate = true;
     });
-    return <instancedMesh ref={meshRef} args={[undefined, undefined, count]}><dodecahedronGeometry args={[0.1, 0]} /><meshBasicMaterial color="#ffffff" transparent opacity={0.6} /></instancedMesh>;
+    return <instancedMesh ref={meshRef} args={[undefined, undefined, count]} raycast={() => null}><dodecahedronGeometry args={[0.1, 0]} /><meshBasicMaterial color="#ffffff" transparent opacity={0.6} /></instancedMesh>;
 };
 
 interface MoviePanelProps {
@@ -340,12 +344,20 @@ const MoviePanel: React.FC<MoviePanelProps> = ({
 
   useFrame((state, delta) => {
     if (flipGroup.current) {
-        // Rotation Logic:
-        // Side A (Black Board) is at 0 rad.
-        // Side B (Poster) is at PI rad.
-        // When revealed, we rotate to PI so the poster faces the camera.
-        const targetRotation = isPosterRevealed ? Math.PI : 0;
+        // SEMANTIC LOGIC CHANGE:
+        // Default (Hidden/Corridor) = Rotation PI (Showing Back).
+        // Active (Revealed/Details) = Rotation 0 (Showing Front/Image) OR 2PI.
         
+        let targetRotation = Math.PI; // Default to Back
+
+        if (isPosterRevealed) {
+            // If Revealed, rotate to Front.
+            // Symmetric Flip:
+            // Left Movie (starts at PI) -> rotates to 0 (Delta -180).
+            // Right Movie (starts at PI) -> rotates to 2PI (Delta +180).
+            targetRotation = isLeft ? 0 : Math.PI * 2;
+        }
+
         flipGroup.current.rotation.y = THREE.MathUtils.lerp(
             flipGroup.current.rotation.y, 
             targetRotation, 
@@ -360,7 +372,6 @@ const MoviePanel: React.FC<MoviePanelProps> = ({
         position={position} 
         rotation={rotation}
     >
-      {/* Spotlight only on HOVER */}
       <SpotLight
         position={[0, 4, 3]} 
         angle={0.3}
@@ -374,13 +385,11 @@ const MoviePanel: React.FC<MoviePanelProps> = ({
 
       <Float speed={2} rotationIntensity={0.05} floatIntensity={0.2}>
         
-         {/* 
-            CRITICAL FIX for Interaction: 
-            The Hit Box must be INSIDE the Float component so it moves in sync with the visual elements.
-            This ensures that where the user sees the board is exactly where they can click.
+          {/* 
+            CRITICAL: The SUPER HITBOX
           */}
           <mesh
-            position={[0, 0, 0]} 
+            position={[0, 0, 1.5]} 
             onClick={(e) => { 
                 e.stopPropagation(); 
                 onClick(); 
@@ -391,13 +400,10 @@ const MoviePanel: React.FC<MoviePanelProps> = ({
             }}
             onPointerOut={() => setHovered(false)}
           >
-            {/* Increased depth (4.0) to catch side-angle clicks */}
-            <boxGeometry args={[4.5, 6.0, 4.0]} />
+            <boxGeometry args={[6.0, 7.5, 4.0]} />
             <meshBasicMaterial 
-                transparent 
-                opacity={0} 
+                visible={false}
                 side={THREE.DoubleSide} 
-                depthWrite={false} 
             />
           </mesh>
 
@@ -405,21 +411,56 @@ const MoviePanel: React.FC<MoviePanelProps> = ({
         {/* The flippable container */}
         <group ref={flipGroup}>
             
-            {/* --- SIDE A: The "Black Board" Cover (Front) --- */}
-            {/* Z > 0 faces the camera initially */}
+            {/* 
+                RESTRUCTURED FACES:
+                Front (Z > 0) = Image
+                Back (Z < 0) = Black Board
+            */}
+
+            {/* --- SIDE A: The AI Image (Front) --- */}
+            {/* Normal Orientation. Visible when Group Rotation is 0 or 2PI. */}
             <group position={[0, 0, 0.06]}>
-                {/* Board Mesh */}
-                <mesh receiveShadow>
+                
+                <mesh position={[0, 0, -0.01]} raycast={() => null}>
+                    <boxGeometry args={[3.6, 5.2, 0.1]} />
+                    <meshStandardMaterial color={isPosterRevealed ? "#000" : "#111"} />
+                </mesh>
+
+                <AsyncImagePanel 
+                    url={imageUrl} 
+                    fallbackColor={primaryColor} 
+                    isActive={true} 
+                    isVisible={isPosterRevealed}
+                />
+
+                 <Html 
+                    position={[0, -2.4, 0.1]} 
+                    transform 
+                    style={{ pointerEvents: 'none', userSelect: 'none', opacity: isPosterRevealed ? 1 : 0 }}
+                >
+                     <div className="bg-black/60 backdrop-blur-md px-4 py-1 rounded-full border border-white/10">
+                        <h3 className="text-[10px] text-white/80 tracking-widest uppercase">
+                            {movie.year}
+                        </h3>
+                     </div>
+                </Html>
+            </group>
+
+            {/* --- SIDE B: The "Black Board" Cover (Back) --- */}
+            {/* Rotated PI. Visible when Group Rotation is PI (Default). */}
+            <group position={[0, 0, -0.06]} rotation={[0, Math.PI, 0]}>
+                {/* Board Mesh - No Raycast */}
+                <mesh receiveShadow raycast={() => null}>
                     <boxGeometry args={[3.6, 5.2, 0.1]} />
                     <meshStandardMaterial 
                         color="#080808" 
-                        roughness={0.7} // More matte
+                        roughness={0.7} 
                         metalness={0.1}
                     />
                 </mesh>
 
-                {/* Glowing Border - Only glows when hovered */}
-                <mesh position={[0, 0, 0]}>
+                {/* Glowing Border */}
+                <mesh position={[0, 0, 0]} raycast={() => null}>
                     <boxGeometry args={[3.7, 5.3, 0.08]} />
                     <meshStandardMaterial 
                         color={primaryColor} 
@@ -429,14 +470,14 @@ const MoviePanel: React.FC<MoviePanelProps> = ({
                     />
                 </mesh>
 
-                {/* 3D Icon - Floating in FRONT of the black board */}
+                {/* 3D Icon */}
                 <group position={[0, 0.5, 0.8]}>
                     <Float speed={4} rotationIntensity={1} floatIntensity={0.5}>
                         <MovieIcon id={movie.id} color1={primaryColor} color2={secondaryColor} />
                     </Float>
                 </group>
 
-                {/* Text on the black board */}
+                {/* Text */}
                 <Html 
                     position={[0, -2, 0.1]} 
                     transform 
@@ -452,45 +493,9 @@ const MoviePanel: React.FC<MoviePanelProps> = ({
                 </Html>
             </group>
 
-
-            {/* --- SIDE B: The AI Image (Back) --- */}
-            {/* Rotated 180 deg so it faces AWAY initially. Visible after flip. */}
-            <group position={[0, 0, -0.06]} rotation={[0, Math.PI, 0]}>
-                
-                {/* Frame Background */}
-                <mesh position={[0, 0, -0.01]}>
-                    <boxGeometry args={[3.6, 5.2, 0.1]} />
-                    {/* Render black if closed, prevent "peeking" */}
-                    <meshStandardMaterial color={isPosterRevealed ? "#000" : "#111"} />
-                </mesh>
-
-                {/* AI Generated Image */}
-                <AsyncImagePanel 
-                    url={imageUrl} 
-                    fallbackColor={primaryColor} 
-                    isActive={true} 
-                    isVisible={isPosterRevealed}
-                />
-
-                {/* Minimal Overlay on Poster */}
-                 <Html 
-                    position={[0, -2.4, 0.1]} 
-                    transform 
-                    style={{ pointerEvents: 'none', userSelect: 'none', opacity: isPosterRevealed ? 1 : 0 }}
-                >
-                     <div className="bg-black/60 backdrop-blur-md px-4 py-1 rounded-full border border-white/10">
-                        <h3 className="text-[10px] text-white/80 tracking-widest uppercase">
-                            {movie.year}
-                        </h3>
-                     </div>
-                </Html>
-            </group>
-
         </group>
 
         {/* --- STATIC ELEMENTS (Do not flip) --- */}
-        
-        {/* Vertical Side Text */}
         <Html 
             position={[2.5, 0, 0]} 
             transform 
@@ -507,7 +512,6 @@ const MoviePanel: React.FC<MoviePanelProps> = ({
             </div>
         </Html>
 
-        {/* Huge Background Year Number */}
         <Html 
             position={[-1, 1, -1]} 
             transform 
@@ -545,7 +549,7 @@ const AsyncImagePanel = ({ url, fallbackColor, isActive, isVisible }: { url: str
     }, [url]);
 
     return (
-        <mesh ref={meshRef} position={[0, 0, 0.05]}>
+        <mesh ref={meshRef} position={[0, 0, 0.05]} raycast={() => null}>
             <planeGeometry args={[3.2, 4.8]} />
             {isVisible && texture ? (
                 <meshBasicMaterial 
