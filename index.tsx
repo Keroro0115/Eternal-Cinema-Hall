@@ -3,19 +3,30 @@ import React, { useState, useEffect, Suspense, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Canvas } from '@react-three/fiber';
 import { AnimatePresence, motion } from 'framer-motion';
+import { Html, useProgress } from '@react-three/drei';
 import { Gallery3D } from './components/Gallery3D';
 import { fetchMovieData } from './services/geminiService';
 import { FALLBACK_MOVIES } from './constants';
 import { AppState } from './types';
-import { Html } from '@react-three/drei';
 
 // Icons
-const IconArrowLeft = () => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>;
-const IconArrowRight = () => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>;
-const IconClose = () => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>;
-const IconSparkles = () => <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0L14.59 9.41L24 12L14.59 14.59L12 24L9.41 14.59L0 12L9.41 9.41L12 0Z" /></svg>;
-const IconFilmStrip = () => <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1"><path strokeLinecap="round" strokeLinejoin="round" d="M3 3h18v18H3zM7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4" /></svg>;
-const IconRefresh = () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>;
+const IconArrowLeft = (props: React.SVGProps<SVGSVGElement>) => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" {...props}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>;
+const IconArrowRight = (props: React.SVGProps<SVGSVGElement>) => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" {...props}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>;
+const IconClose = (props: React.SVGProps<SVGSVGElement>) => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" {...props}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>;
+const IconSparkles = (props: React.SVGProps<SVGSVGElement>) => <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24" {...props}><path d="M12 0L14.59 9.41L24 12L14.59 14.59L12 24L9.41 14.59L0 12L9.41 9.41L12 0Z" /></svg>;
+const IconFilmStrip = (props: React.SVGProps<SVGSVGElement>) => <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" {...props}><path strokeLinecap="round" strokeLinejoin="round" d="M3 3h18v18H3zM7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4" /></svg>;
+const IconRefresh = (props: React.SVGProps<SVGSVGElement>) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" {...props}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>;
+
+function Loader() {
+  const { progress } = useProgress();
+  return (
+    <Html center>
+      <div className="text-cinema-gold font-mono text-xs tracking-widest uppercase">
+        {progress.toFixed(0)}% Loading Universe...
+      </div>
+    </Html>
+  );
+}
 
 const App = () => {
   const [state, setState] = useState<AppState>({
@@ -34,7 +45,7 @@ const App = () => {
     const initData = async () => {
       try {
         const data = await fetchMovieData();
-        if (data && data.movies.length > 0) {
+        if (data && data.movies && data.movies.length > 0) {
           setState(prev => ({ ...prev, movies: data.movies }));
         }
       } catch (e) {
@@ -95,8 +106,17 @@ const App = () => {
   // We want to walk past it (index length) and reach index (length+1).
   const isEndScreen = state.currentMovieIndex >= state.movies.length + 1;
   const isWalkingPastEnd = state.currentMovieIndex >= state.movies.length;
+
+  // Layout Logic:
+  // Even index = Left Side Movie -> Panel should be on Right.
+  // Odd index = Right Side Movie -> Panel should be on Left.
+  const isLeftMovie = state.currentMovieIndex % 2 === 0;
+  const panelOnRight = isLeftMovie; 
   
-  const themeColor = currentMovie.color_palette?.[0] || '#d4af37';
+  const themeColor = currentMovie?.color_palette?.[0] || '#d4af37';
+
+  // Guard against render if data is somehow missing
+  if (!currentMovie) return null;
 
   return (
     <div 
@@ -107,20 +127,23 @@ const App = () => {
       {/* Film Grain Overlay */}
       <div className="absolute inset-0 pointer-events-none z-50 opacity-10 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] mix-blend-overlay"></div>
 
-      {/* 3D Scene - No Suspense Fallback that blocks visual */}
+      {/* 3D Scene - Added Suspense for async assets like Environment */}
       <div className="absolute inset-0 z-0">
         <Canvas camera={{ position: [0, 0, 5], fov: 50 }} dpr={[1, 2]}> 
           <color attach="background" args={['#050505']} />
-          <fogExp2 attach="fog" color="#050505" density={0.04} />
+          <fogExp2 attach="fog" color="#050505" density={0.01} />
           
-          <Gallery3D 
-            movies={state.movies} 
-            scrollPos={scrollPos}
-            onItemClick={(idx) => {
-              setScrollPos(idx);
-              setState(s => ({ ...s, isDetailsOpen: true }));
-            }}
-          />
+          <Suspense fallback={<Loader />}>
+            <Gallery3D 
+              movies={state.movies} 
+              scrollPos={scrollPos}
+              isDetailsOpen={state.isDetailsOpen}
+              onItemClick={(idx) => {
+                setScrollPos(idx);
+                setState(s => ({ ...s, isDetailsOpen: true }));
+              }}
+            />
+          </Suspense>
         </Canvas>
       </div>
 
@@ -201,40 +224,15 @@ const App = () => {
                  <span className="font-serif italic text-gray-300">{lang === 'zh' ? currentMovie.director_zh : currentMovie.director_en}</span>
               </div>
               
-              <motion.button 
-                onClick={() => setState(s => ({ ...s, isDetailsOpen: true }))}
-                className="pointer-events-auto mt-8 group flex items-center gap-4 text-sm tracking-[0.25em] uppercase text-white transition-all bg-black/40 backdrop-blur-md px-10 py-4 rounded-full border"
-                style={{
-                    borderColor: themeColor,
-                    color: '#fff'
-                }}
-                animate={{ 
-                    scale: [1, 1.05, 1],
-                    boxShadow: [
-                        `0 0 0px ${themeColor}00`, 
-                        `0 0 25px ${themeColor}60`, 
-                        `0 0 0px ${themeColor}00`
-                    ],
-                    backgroundColor: [
-                        `rgba(0,0,0,0.5)`,
-                        `${themeColor}20`,
-                        `rgba(0,0,0,0.5)`
-                    ]
-                }}
-                transition={{ 
-                    duration: 2.5, 
-                    ease: "easeInOut", 
-                    repeat: Infinity,
-                }}
+              <motion.div 
+                 initial={{ opacity: 0 }}
+                 animate={{ opacity: 0.6 }}
+                 transition={{ delay: 1 }}
+                 className="mt-6 text-[10px] text-gray-400 uppercase tracking-[0.3em]"
               >
-                <motion.span 
-                    className="w-2 h-2 rounded-full" 
-                    style={{ backgroundColor: themeColor }}
-                    animate={{ opacity: [0.6, 1, 0.6] }}
-                    transition={{ duration: 2.5, repeat: Infinity }}
-                />
-                {isEn ? 'Explore' : '探索'}
-              </motion.button>
+                  {isEn ? 'Click poster to reveal' : '点击海报揭秘'}
+              </motion.div>
+
             </motion.div>
           )}
 
@@ -274,30 +272,20 @@ const App = () => {
 
       {/* Slide-in Detail Panel */}
       <AnimatePresence>
-        {state.isDetailsOpen && (
+        {state.isDetailsOpen && currentMovie && (
           <>
-            {/* Backdrop */}
             <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm"
-              onClick={() => setState(s => ({ ...s, isDetailsOpen: false }))}
-            />
-            
-            {/* Side Panel */}
-            <motion.div 
-              initial={{ x: '100%' }}
+              initial={{ x: panelOnRight ? '100%' : '-100%' }}
               animate={{ x: 0 }}
-              exit={{ x: '100%' }}
+              exit={{ x: panelOnRight ? '100%' : '-100%' }}
               transition={{ type: "spring", stiffness: 300, damping: 30 }}
-              className="absolute top-0 right-0 h-full w-full md:w-[600px] z-50 bg-[#0a0a0a] border-l border-white/10 shadow-2xl overflow-y-auto"
+              className={`absolute top-0 ${panelOnRight ? 'right-0 border-l' : 'left-0 border-r'} h-full w-full md:w-[600px] z-50 bg-[#0a0a0a] border-white/10 shadow-2xl overflow-y-auto`}
               onClick={e => e.stopPropagation()}
             >
               <div className="p-8 md:p-12 relative min-h-full">
                 
                 <button 
-                  className="absolute top-8 right-8 text-gray-500 hover:text-white transition-colors"
+                  className={`absolute top-8 ${panelOnRight ? 'right-8' : 'left-8'} text-gray-500 hover:text-white transition-colors`}
                   onClick={() => setState(s => ({ ...s, isDetailsOpen: false }))}
                 >
                   <IconClose />
