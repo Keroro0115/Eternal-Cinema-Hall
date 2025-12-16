@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { MovieDataResponse } from "../types";
+import { MovieDataResponse, MovieArt } from "../types";
 
 // Define the schema for structured output
 const movieSchema: Schema = {
@@ -69,29 +69,29 @@ const movieSchema: Schema = {
   required: ["movies"],
 };
 
+const getClient = () => {
+    const apiKey = process.env.API_KEY;
+    if (!apiKey) {
+      console.warn("No API Key found for Gemini.");
+      return null;
+    }
+    return new GoogleGenAI({ apiKey });
+}
+
 export const fetchMovieData = async (): Promise<MovieDataResponse | null> => {
-  const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    console.warn("No API Key found for Gemini.");
-    return null;
-  }
+  const ai = getClient();
+  if (!ai) return null;
 
   try {
-    const ai = new GoogleGenAI({ apiKey });
-    
     const prompt = `
-      Create an artistic concept for an exhibition called "Eternal Cinema Hall".
-      Generate a list of 16 movies. 
+      You are the curator of the "Eternal Cinema Hall", an infinite art gallery.
+      Generate a list of 16 highly acclaimed movies.
       
-      CRITICAL REQUIREMENT: "Deadpool & Wolverine" (Deadpool 3) MUST be the LAST movie (No. 16) in the list.
+      Requirements:
+      - Select a diverse mix of classics, modern masterpieces, animation, and international cinema.
+      - Ensure they are visually distinct and thematically deep.
+      - Do NOT repeat common blockbusters unless they have high artistic merit.
       
-      For the other 15, select randomly from:
-      - Classic (pre-1990)
-      - Modern (1990-2020)
-      - Asian Cinema (e.g., Wong Kar-wai, Kurosawa, Bong Joon-ho)
-      - Sci-Fi/Fantasy
-      - Animation/Romance
-
       For each movie, provide:
       1. Core emotion (dual language)
       2. A visual metaphor (poetic description)
@@ -125,6 +125,7 @@ export const fetchMovieData = async (): Promise<MovieDataResponse | null> => {
 
     // Assign incremental IDs to ensure order in 3D space
     if (data.movies) {
+      // We initially give them 1-16, but the App will re-index them to append to the list
       data.movies = data.movies.slice(0, 16).map((m, index) => ({ ...m, id: index + 1 }));
     }
     
@@ -135,3 +136,37 @@ export const fetchMovieData = async (): Promise<MovieDataResponse | null> => {
     return null;
   }
 };
+
+export const generatePosterImage = async (movie: MovieArt): Promise<string | null> => {
+    const ai = getClient();
+    if (!ai) return null;
+  
+    try {
+      // Prompt optimized for Gemini Image Generation
+      const prompt = `Movie poster for "${movie.title_en}". Visual style: ${movie.visual_metaphor.en}. Minimalist, high quality, 8k, cinematic lighting, artistic composition, textless.`;
+      
+      // Use the proper model for image generation
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: { parts: [{ text: prompt }] },
+        config: {
+          imageConfig: {
+              aspectRatio: '3:4' // Vertical poster ratio
+          }
+        }
+      });
+  
+      // Iterate to find the image part in the response
+      for (const candidate of response.candidates || []) {
+          for (const part of candidate.content?.parts || []) {
+            if (part.inlineData && part.inlineData.data) {
+                return `data:image/png;base64,${part.inlineData.data}`;
+            }
+          }
+      }
+      return null;
+    } catch (e) {
+      console.error("Image Gen Error", e);
+      return null;
+    }
+}

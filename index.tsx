@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, Suspense, useCallback } from 'react';
+import React, { useState, useEffect, Suspense, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Canvas } from '@react-three/fiber';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -14,8 +14,6 @@ const IconArrowLeft = (props: React.SVGProps<SVGSVGElement>) => <svg width="24" 
 const IconArrowRight = (props: React.SVGProps<SVGSVGElement>) => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" {...props}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>;
 const IconClose = (props: React.SVGProps<SVGSVGElement>) => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" {...props}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>;
 const IconSparkles = (props: React.SVGProps<SVGSVGElement>) => <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24" {...props}><path d="M12 0L14.59 9.41L24 12L14.59 14.59L12 24L9.41 14.59L0 12L9.41 9.41L12 0Z" /></svg>;
-const IconFilmStrip = (props: React.SVGProps<SVGSVGElement>) => <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" {...props}><path strokeLinecap="round" strokeLinejoin="round" d="M3 3h18v18H3zM7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4" /></svg>;
-const IconRefresh = (props: React.SVGProps<SVGSVGElement>) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" {...props}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>;
 
 function Loader() {
   const { progress } = useProgress();
@@ -39,12 +37,24 @@ const App = () => {
 
   const [isCurating, setIsCurating] = useState(true);
   const [scrollPos, setScrollPos] = useState(0);
+  
+  // Ref to track scroll position inside async effects
+  const scrollPosRef = useRef(0);
+  useEffect(() => { scrollPosRef.current = scrollPos; }, [scrollPos]);
 
+  // Initial Fetch (Only if user hasn't moved much)
   useEffect(() => {
-    // Non-blocking background fetch
     const initData = async () => {
       try {
         const data = await fetchMovieData();
+        
+        // Only update if user is still near the start to prevent jarring shifts
+        if (scrollPosRef.current > 0.5) {
+            console.log("User active, skipping initial background update.");
+            setIsCurating(false);
+            return;
+        }
+
         if (data && data.movies && data.movies.length > 0) {
           setState(prev => ({ ...prev, movies: data.movies }));
         }
@@ -57,38 +67,84 @@ const App = () => {
     initData();
   }, []);
 
+  // Infinite Scroll Trigger
+  useEffect(() => {
+    const triggerThreshold = state.movies.length - 4;
+    
+    if (scrollPos > triggerThreshold && !state.isLoading && !isCurating) {
+        const loadMore = async () => {
+            console.log("Approaching end of universe, expanding...");
+            setState(prev => ({ ...prev, isLoading: true }));
+            setIsCurating(true);
+
+            try {
+                const newData = await fetchMovieData();
+                if (newData && newData.movies.length > 0) {
+                    setState(prev => {
+                        // Re-index new movies to append correctly
+                        const startingId = prev.movies.length + 1;
+                        const newMoviesWithIds = newData.movies.map((m, i) => ({
+                            ...m,
+                            id: startingId + i
+                        }));
+                        
+                        return {
+                            ...prev,
+                            isLoading: false,
+                            movies: [...prev.movies, ...newMoviesWithIds]
+                        };
+                    });
+                } else {
+                    setState(prev => ({ ...prev, isLoading: false }));
+                }
+            } catch (e) {
+                console.error("Failed to expand universe", e);
+                setState(prev => ({ ...prev, isLoading: false }));
+            } finally {
+                setIsCurating(false);
+            }
+        };
+        loadMore();
+    }
+  }, [scrollPos, state.movies.length, state.isLoading, isCurating]);
+
+
+  // Keyboard Event Listener for ESC
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape' && state.isDetailsOpen) {
+            setState(s => ({ ...s, isDetailsOpen: false }));
+        }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [state.isDetailsOpen]);
+
   // Update current index based on scroll position for UI sync
   useEffect(() => {
     const index = Math.round(scrollPos);
-    // Allow index to go up to movies.length + 2 (End Screen zone)
     if (index !== state.currentMovieIndex && index >= 0) {
       setState(prev => ({ ...prev, currentMovieIndex: index }));
     }
-  }, [scrollPos, state.movies.length]);
+  }, [scrollPos]);
 
   const handleNext = () => {
-    // Allow scrolling 2 steps past the last movie to trigger end screen
-    setScrollPos(prev => Math.min(prev + 1, state.movies.length + 1.5));
+    // Infinite scroll: just go next, no bounds checking against max length
+    setScrollPos(prev => prev + 1);
   };
 
   const handlePrev = () => {
     setScrollPos(prev => Math.max(prev - 1, 0));
   };
   
-  const handleReplay = () => {
-    setScrollPos(0);
-  }
-
-  // Wheel Handler with strict damping and limits
+  // Wheel Handler with strict damping
   const handleWheel = useCallback((e: React.WheelEvent) => {
     const delta = e.deltaY * 0.002;
     setScrollPos(prev => {
       const next = prev + delta;
-      // Allow scrolling 2 steps past the last movie to trigger end screen
-      // If movies.length is 16 (indices 0-15), we allow up to ~17.5
-      return Math.max(0, Math.min(next, state.movies.length + 1.5));
+      return Math.max(0, next); // Only clamp start, allow infinite end
     });
-  }, [state.movies.length]);
+  }, []);
 
   const toggleLanguage = () => {
     setState(prev => ({ ...prev, language: prev.language === 'zh' ? 'en' : 'zh' }));
@@ -101,21 +157,10 @@ const App = () => {
   const lang = state.language;
   const isEn = lang === 'en';
   
-  // Logic for "End Screen": 
-  // Last movie is at index (length-1). 
-  // We want to walk past it (index length) and reach index (length+1).
-  const isEndScreen = state.currentMovieIndex >= state.movies.length + 1;
-  const isWalkingPastEnd = state.currentMovieIndex >= state.movies.length;
-
   // Layout Logic:
-  // Even index = Left Side Movie -> Panel should be on Right.
-  // Odd index = Right Side Movie -> Panel should be on Left.
   const isLeftMovie = state.currentMovieIndex % 2 === 0;
   const panelOnRight = isLeftMovie; 
   
-  const themeColor = currentMovie?.color_palette?.[0] || '#d4af37';
-
-  // Guard against render if data is somehow missing
   if (!currentMovie) return null;
 
   return (
@@ -127,7 +172,7 @@ const App = () => {
       {/* Film Grain Overlay */}
       <div className="absolute inset-0 pointer-events-none z-50 opacity-10 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] mix-blend-overlay"></div>
 
-      {/* 3D Scene - Added Suspense for async assets like Environment */}
+      {/* 3D Scene */}
       <div className="absolute inset-0 z-0">
         <Canvas camera={{ position: [0, 0, 5], fov: 50 }} dpr={[1, 2]}> 
           <color attach="background" args={['#050505']} />
@@ -154,7 +199,7 @@ const App = () => {
             {isEn ? 'ETERNAL GALLERY' : '永恒回廊'}
           </h1>
           <p className="text-xs md:text-sm text-gray-400 mt-2 font-mono tracking-[0.3em] uppercase opacity-70 border-l-2 border-cinema-gold pl-3">
-            {isEn ? 'Immersive Cinema Archive' : '沉浸式电影艺术档案'}
+            {isEn ? 'Infinite Cinema Archive' : '无限电影艺术档案'}
           </p>
         </div>
 
@@ -177,7 +222,7 @@ const App = () => {
                         <IconSparkles />
                     </motion.div>
                     <span className="text-[10px] uppercase tracking-widest text-cinema-gold/80 font-mono">
-                        {isEn ? 'AI Curating...' : 'AI 策展中...'}
+                        {isEn ? 'Expanding Universe...' : '宇宙扩张中...'}
                     </span>
                 </div>
             )}
@@ -187,23 +232,23 @@ const App = () => {
       {/* Navigation Controls */}
       <div className="absolute bottom-12 right-12 z-40 flex flex-col gap-4 pointer-events-auto">
         <div className="flex flex-col items-center gap-2 glass-panel p-2 rounded-full border border-white/10">
-           <ControlButton onClick={handlePrev} icon={<IconArrowLeft className="rotate-90" />} />
+           {/* Up Arrow triggers NEXT (Forward) */}
+           <ControlButton onClick={handleNext} icon={<IconArrowLeft className="rotate-90" />} />
            <div className="w-px h-8 bg-white/10"></div>
-           <ControlButton onClick={handleNext} icon={<IconArrowRight className="rotate-90" />} />
+           {/* Down Arrow triggers PREV (Backward) */}
+           <ControlButton onClick={handlePrev} icon={<IconArrowRight className="rotate-90" />} />
         </div>
       </div>
       
-      {/* Progress Indicator - Hide when walking past end */}
-      {!isWalkingPastEnd && (
-        <div className="absolute bottom-12 left-12 z-40 font-mono text-xs text-cinema-gold tracking-widest opacity-80">
-            {String(state.currentMovieIndex + 1).padStart(2, '0')} / {String(state.movies.length).padStart(2, '0')}
-        </div>
-      )}
+      {/* Progress Indicator - Shows total loaded so far */}
+      <div className="absolute bottom-12 left-12 z-40 font-mono text-xs text-cinema-gold tracking-widest opacity-80">
+          {String(state.currentMovieIndex + 1).padStart(3, '0')} / ∞
+      </div>
 
-      {/* Movie Info (Bottom Center) - Only shows when detailed view is NOT open AND NOT End Screen */}
+      {/* Movie Info (Bottom Center) */}
       <div className="absolute bottom-16 left-1/2 -translate-x-1/2 text-center pointer-events-none w-full px-4 z-30">
         <AnimatePresence mode="wait">
-          {!state.isDetailsOpen && !isEndScreen && (
+          {!state.isDetailsOpen && (
             <motion.div
               key={currentMovie.id}
               initial={{ opacity: 0, y: 20, filter: 'blur(10px)' }}
@@ -235,38 +280,6 @@ const App = () => {
 
             </motion.div>
           )}
-
-          {/* End Screen Overlay - Only appears after walking 2 steps past last movie */}
-          {isEndScreen && (
-             <motion.div
-                key="end-screen"
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.8 }}
-                className="flex flex-col items-center justify-center p-8 bg-black/40 backdrop-blur-lg rounded-2xl border border-white/10"
-             >
-                <div className="text-white/50 mb-6 animate-pulse">
-                    <IconFilmStrip />
-                </div>
-                
-                <h2 className="text-2xl font-serif text-white mb-2 tracking-widest text-center">
-                    {isEn ? 'End of Reel' : '胶片尽头'}
-                </h2>
-                <p className="text-xs text-gray-400 font-mono mb-8 tracking-[0.2em] uppercase opacity-70">
-                    {isEn ? 'The journey continues' : '旅程未完待续'}
-                </p>
-
-                <button 
-                    onClick={handleReplay}
-                    className="pointer-events-auto group flex items-center gap-2 px-6 py-3 bg-cinema-gold text-black rounded-sm font-bold tracking-[0.2em] hover:bg-white transition-all duration-300 uppercase text-xs shadow-[0_0_20px_rgba(212,175,55,0.3)] hover:shadow-[0_0_30px_rgba(255,255,255,0.5)]"
-                >
-                   <IconRefresh />
-                   {isEn ? 'Experience Again' : '再次体验'}
-                </button>
-             </motion.div>
-          )}
-
         </AnimatePresence>
       </div>
 
@@ -291,21 +304,38 @@ const App = () => {
                   <IconClose />
                 </button>
 
-                <div className="space-y-12 mt-12">
+                <div className="space-y-10 mt-12">
                   
                   {/* Header Section */}
                   <div>
-                    <span className="text-cinema-gold font-mono text-xs tracking-widest uppercase mb-4 block">No. {String(currentMovie.id).padStart(3, '0')}</span>
-                    <h3 className="text-3xl md:text-5xl font-serif text-white mb-2 leading-tight">
-                      {lang === 'zh' ? currentMovie.visual_metaphor.zh : currentMovie.visual_metaphor.en}
-                    </h3>
+                    <div className="flex items-baseline justify-between mb-2">
+                        <span className="text-cinema-gold font-mono text-xs tracking-widest uppercase">No. {String(currentMovie.id).padStart(3, '0')}</span>
+                        <span className="text-gray-500 font-mono text-xs">{currentMovie.year}</span>
+                    </div>
+                    
+                    <h2 className="text-4xl md:text-6xl font-serif font-bold text-white mb-4 leading-none tracking-tight">
+                        {lang === 'zh' ? currentMovie.title_zh : currentMovie.title_en}
+                    </h2>
+
+                    <div className="flex items-center gap-3 mb-8 text-sm text-gray-400 font-sans tracking-widest uppercase">
+                        <span className="bg-white/10 px-2 py-0.5 rounded text-[10px] text-cinema-gold">DIR</span>
+                        <span>{lang === 'zh' ? currentMovie.director_zh : currentMovie.director_en}</span>
+                    </div>
+
+                    <div className="relative pl-6 border-l border-cinema-gold/50">
+                        <h3 className="text-xl md:text-2xl font-serif text-gray-200 italic leading-relaxed opacity-90">
+                            {lang === 'zh' ? currentMovie.visual_metaphor.zh : currentMovie.visual_metaphor.en}
+                        </h3>
+                    </div>
                   </div>
 
                   {/* Haiku Section */}
-                  <div className="border-l-2 border-cinema-gold pl-6 py-2">
-                     <pre className="font-serif text-lg text-gray-300 whitespace-pre-wrap leading-loose italic">
+                  <div className="bg-white/5 p-6 rounded-lg border border-white/5 relative overflow-hidden">
+                     <div className="absolute top-0 left-0 w-1 h-full bg-cinema-gold"></div>
+                     <pre className="font-serif text-lg text-gray-300 whitespace-pre-wrap leading-loose italic relative z-10">
                       {lang === 'zh' ? currentMovie.haiku.zh : currentMovie.haiku.en}
                      </pre>
+                     <div className="absolute -right-4 -bottom-4 text-[100px] text-white/5 font-serif pointer-events-none select-none leading-none">”</div>
                   </div>
 
                   {/* Details Grid */}
@@ -337,7 +367,7 @@ const App = () => {
                   </div>
 
                   {/* Art Note */}
-                  <div className="pt-8">
+                  <div className="pt-2">
                     <h4 className="text-[10px] text-gray-500 uppercase tracking-[0.2em] mb-4">{isEn ? 'Curator Note' : '策展人笔记'}</h4>
                     <p className="text-gray-400 leading-8 text-sm md:text-base font-light text-justify">
                       {lang === 'zh' ? currentMovie.art_note.zh : currentMovie.art_note.en}
@@ -346,7 +376,7 @@ const App = () => {
                 </div>
 
                 {/* Footer Decor */}
-                <div className="absolute bottom-4 right-8 opacity-20 text-[100px] font-serif leading-none select-none pointer-events-none text-white/5">
+                <div className="absolute bottom-4 right-8 opacity-10 text-[100px] font-serif leading-none select-none pointer-events-none text-white/5">
                   {currentMovie.year}
                 </div>
               </div>
