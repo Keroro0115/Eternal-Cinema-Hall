@@ -1,3 +1,4 @@
+
 export type Language = 'zh' | 'en';
 
 export interface LocalizedString {

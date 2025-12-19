@@ -14,6 +14,8 @@ const IconArrowLeft = (props: React.SVGProps<SVGSVGElement>) => <svg width="24" 
 const IconArrowRight = (props: React.SVGProps<SVGSVGElement>) => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" {...props}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>;
 const IconClose = (props: React.SVGProps<SVGSVGElement>) => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" {...props}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>;
 const IconSparkles = (props: React.SVGProps<SVGSVGElement>) => <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24" {...props}><path d="M12 0L14.59 9.41L24 12L14.59 14.59L12 24L9.41 14.59L0 12L9.41 9.41L12 0Z" /></svg>;
+const IconRestart = (props: React.SVGProps<SVGSVGElement>) => <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" {...props}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>;
+const IconReload = (props: React.SVGProps<SVGSVGElement>) => <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" {...props}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>;
 
 function Loader() {
   const { progress } = useProgress();
@@ -35,8 +37,8 @@ const App = () => {
     movies: FALLBACK_MOVIES,
   });
 
-  const [isCurating, setIsCurating] = useState(true);
   const [scrollPos, setScrollPos] = useState(0);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   
   // Ref to track scroll position inside async effects
   const scrollPosRef = useRef(0);
@@ -51,7 +53,6 @@ const App = () => {
         // Only update if user is still near the start to prevent jarring shifts
         if (scrollPosRef.current > 0.5) {
             console.log("User active, skipping initial background update.");
-            setIsCurating(false);
             return;
         }
 
@@ -60,53 +61,62 @@ const App = () => {
         }
       } catch (e) {
         console.error("Background fetch failed, keeping fallback data");
-      } finally {
-        setIsCurating(false);
       }
     };
     initData();
   }, []);
 
-  // Infinite Scroll Trigger
-  useEffect(() => {
-    const triggerThreshold = state.movies.length - 4;
-    
-    if (scrollPos > triggerThreshold && !state.isLoading && !isCurating) {
-        const loadMore = async () => {
-            console.log("Approaching end of universe, expanding...");
-            setState(prev => ({ ...prev, isLoading: true }));
-            setIsCurating(true);
+  // --- Return to Start Logic (For the Door Button) ---
+  const handleReturnToStart = () => {
+      // Setting scroll pos to 0 triggers a smooth camera "fly back" due to damping in Gallery3D
+      setScrollPos(0);
+      setState(s => ({ ...s, isDetailsOpen: false }));
+  };
 
-            try {
-                const newData = await fetchMovieData();
-                if (newData && newData.movies.length > 0) {
-                    setState(prev => {
-                        // Re-index new movies to append correctly
-                        const startingId = prev.movies.length + 1;
-                        const newMoviesWithIds = newData.movies.map((m, i) => ({
-                            ...m,
-                            id: startingId + i
-                        }));
-                        
-                        return {
-                            ...prev,
-                            isLoading: false,
-                            movies: [...prev.movies, ...newMoviesWithIds]
-                        };
-                    });
-                } else {
-                    setState(prev => ({ ...prev, isLoading: false }));
-                }
-            } catch (e) {
-                console.error("Failed to expand universe", e);
-                setState(prev => ({ ...prev, isLoading: false }));
-            } finally {
-                setIsCurating(false);
-            }
-        };
-        loadMore();
+  // --- Refresh / New Exhibition Logic (For the Top Right Button) ---
+  const handleRefreshExhibition = async () => {
+    if (state.isLoading) return;
+
+    setState(prev => ({ ...prev, isLoading: true, isDetailsOpen: false }));
+    setErrorMsg(null);
+    setScrollPos(0);
+
+    // Timeout Promise (20 seconds)
+    const timeoutPromise = new Promise<null>((_, reject) => 
+        setTimeout(() => reject(new Error('Timeout')), 20000)
+    );
+
+    try {
+      // Race the fetch against the timeout
+      const data = await Promise.race([
+          fetchMovieData(),
+          timeoutPromise
+      ]);
+      
+      // Artificial minimal delay for cinematic transition
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      if (data && data.movies && data.movies.length > 0) {
+        setState(prev => ({ 
+          ...prev, 
+          movies: data.movies, 
+          isLoading: false,
+          currentMovieIndex: 0
+        }));
+      } else {
+        throw new Error("No data received");
+      }
+    } catch (e: any) {
+      console.error("Refresh failed", e);
+      setErrorMsg("Connection unstable. Restoring archive...");
+      
+      // Show error briefly then stop loading
+      setTimeout(() => {
+          setState(prev => ({ ...prev, isLoading: false }));
+          setErrorMsg(null);
+      }, 2000);
     }
-  }, [scrollPos, state.movies.length, state.isLoading, isCurating]);
+  };
 
 
   // Keyboard Event Listener for ESC
@@ -123,14 +133,17 @@ const App = () => {
   // Update current index based on scroll position for UI sync
   useEffect(() => {
     const index = Math.round(scrollPos);
-    if (index !== state.currentMovieIndex && index >= 0) {
-      setState(prev => ({ ...prev, currentMovieIndex: index }));
+    // Clamp index for UI display
+    const safeIndex = Math.min(Math.max(index, 0), state.movies.length - 1);
+    
+    if (safeIndex !== state.currentMovieIndex) {
+      setState(prev => ({ ...prev, currentMovieIndex: safeIndex }));
     }
-  }, [scrollPos]);
+  }, [scrollPos, state.movies.length]);
 
   const handleNext = () => {
-    // Infinite scroll: just go next, no bounds checking against max length
-    setScrollPos(prev => prev + 1);
+    // Allow scrolling to movies.length to see the portal
+    setScrollPos(prev => Math.min(prev + 1, state.movies.length));
   };
 
   const handlePrev = () => {
@@ -139,12 +152,14 @@ const App = () => {
   
   // Wheel Handler with strict damping
   const handleWheel = useCallback((e: React.WheelEvent) => {
+    if (state.isLoading) return; // Disable scroll during loading
     const delta = e.deltaY * 0.002;
     setScrollPos(prev => {
       const next = prev + delta;
-      return Math.max(0, next); // Only clamp start, allow infinite end
+      // Allow scrolling slightly past the end to see the portal
+      return Math.min(Math.max(0, next), state.movies.length);
     });
-  }, []);
+  }, [state.movies.length, state.isLoading]);
 
   const toggleLanguage = () => {
     setState(prev => ({ ...prev, language: prev.language === 'zh' ? 'en' : 'zh' }));
@@ -172,6 +187,41 @@ const App = () => {
       {/* Film Grain Overlay */}
       <div className="absolute inset-0 pointer-events-none z-50 opacity-10 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] mix-blend-overlay"></div>
 
+      {/* Loading Overlay */}
+      <AnimatePresence>
+        {state.isLoading && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-[100] bg-black/90 backdrop-blur-xl flex flex-col items-center justify-center pointer-events-auto"
+          >
+            <motion.div 
+              animate={{ rotate: 360 }}
+              transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+              className="mb-8"
+            >
+              <IconSparkles width={48} height={48} className="text-cinema-gold" />
+            </motion.div>
+            
+            {errorMsg ? (
+               <h2 className="text-xl font-serif text-red-400 tracking-[0.2em] uppercase mb-4">
+                  {errorMsg}
+               </h2>
+            ) : (
+                <>
+                    <h2 className="text-2xl font-serif text-white tracking-[0.5em] uppercase mb-4 animate-pulse">
+                        {isEn ? 'Curating Exhibition...' : '正在策展新的影像...'}
+                    </h2>
+                    <div className="text-xs text-gray-500 font-mono tracking-widest">
+                        AI GENERATING 10 ARTIFACTS
+                    </div>
+                </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* 3D Scene */}
       <div className="absolute inset-0 z-0">
         <Canvas camera={{ position: [0, 0, 5], fov: 50 }} dpr={[1, 2]}> 
@@ -187,6 +237,7 @@ const App = () => {
                 setScrollPos(idx);
                 setState(s => ({ ...s, isDetailsOpen: true }));
               }}
+              onRestart={handleReturnToStart} // FIXED: Door now triggers Return, not Refresh
             />
           </Suspense>
         </Canvas>
@@ -198,34 +249,34 @@ const App = () => {
           <h1 className="text-3xl md:text-5xl font-serif font-bold tracking-widest text-transparent bg-clip-text bg-gradient-to-br from-white via-gray-300 to-gray-600 drop-shadow-2xl">
             {isEn ? 'ETERNAL GALLERY' : '永恒回廊'}
           </h1>
-          <p className="text-xs md:text-sm text-gray-400 mt-2 font-mono tracking-[0.3em] uppercase opacity-70 border-l-2 border-cinema-gold pl-3">
-            {isEn ? 'Infinite Cinema Archive' : '无限电影艺术档案'}
-          </p>
+          <div className="flex items-center gap-3 mt-2">
+            <p className="text-xs md:text-sm text-gray-400 font-mono tracking-[0.3em] uppercase opacity-70 border-l-2 border-cinema-gold pl-3">
+                {isEn ? 'Cinema Archive' : '电影艺术档案'}
+            </p>
+          </div>
         </div>
 
-        <div className="flex flex-col items-end gap-2">
-            <button 
-            onClick={toggleLanguage}
-            className="pointer-events-auto px-4 py-1.5 glass-panel rounded-sm text-[10px] font-bold tracking-[0.2em] hover:bg-white hover:text-black transition-all duration-300 uppercase border border-white/20"
-            >
-            {isEn ? 'CN / EN' : '中 / 英'}
-            </button>
+        <div className="flex flex-col items-end gap-3 pointer-events-auto">
             
-            {/* AI Status Indicator */}
-            {isCurating && (
-                <div className="pointer-events-none flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 backdrop-blur-md">
-                    <motion.div 
-                        animate={{ rotate: 360, opacity: [0.5, 1, 0.5] }} 
-                        transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                        className="text-cinema-gold"
-                    >
-                        <IconSparkles />
-                    </motion.div>
-                    <span className="text-[10px] uppercase tracking-widest text-cinema-gold/80 font-mono">
-                        {isEn ? 'Expanding Universe...' : '宇宙扩张中...'}
-                    </span>
-                </div>
-            )}
+            {/* NEW EXHIBITION BUTTON */}
+            <button 
+                onClick={handleRefreshExhibition}
+                disabled={state.isLoading}
+                className="group flex items-center gap-2 px-4 py-2 bg-cinema-gold/10 hover:bg-cinema-gold/20 border border-cinema-gold/30 hover:border-cinema-gold text-cinema-gold rounded-sm transition-all duration-300 backdrop-blur-md"
+            >
+                <IconSparkles className={`w-3 h-3 ${state.isLoading ? 'animate-spin' : 'group-hover:rotate-12 transition-transform'}`} />
+                <span className="text-[10px] font-bold tracking-[0.2em] uppercase">
+                    {isEn ? 'New Exhibition' : '策展新展'}
+                </span>
+            </button>
+
+            {/* LANGUAGE TOGGLE */}
+            <button 
+                onClick={toggleLanguage}
+                className="px-4 py-1.5 glass-panel rounded-sm text-[10px] font-bold tracking-[0.2em] hover:bg-white hover:text-black transition-all duration-300 uppercase border border-white/20 text-white/70"
+            >
+                {isEn ? 'CN / EN' : '中 / 英'}
+            </button>
         </div>
       </header>
 
@@ -238,14 +289,34 @@ const App = () => {
            {/* Down Arrow triggers PREV (Backward) */}
            <ControlButton onClick={handlePrev} icon={<IconArrowRight className="rotate-90" />} />
         </div>
+        
+        {/* Restart Button (Visible only when deep in the gallery) */}
+        <AnimatePresence>
+            {scrollPos > 5 && (
+                 <motion.div
+                    initial={{ opacity: 0, scale: 0.5 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.5 }}
+                 >
+                     <button 
+                        onClick={handleReturnToStart}
+                        className="w-10 h-10 rounded-full flex items-center justify-center bg-white/5 border border-white/20 text-cinema-gold hover:bg-cinema-gold hover:text-black transition-all duration-300 backdrop-blur-md"
+                        title={isEn ? "Return to Entrance" : "回到入口"}
+                     >
+                        <IconRestart width={16} height={16} />
+                     </button>
+                 </motion.div>
+            )}
+        </AnimatePresence>
       </div>
       
       {/* Progress Indicator - Shows total loaded so far */}
       <div className="absolute bottom-12 left-12 z-40 font-mono text-xs text-cinema-gold tracking-widest opacity-80">
-          {String(state.currentMovieIndex + 1).padStart(3, '0')} / ∞
+          {String(state.currentMovieIndex + 1).padStart(2, '0')} / {state.movies.length}
       </div>
 
-      {/* Movie Info (Bottom Center) */}
+      {/* Movie Info (Bottom Center) - HIDE when at the Portal (end) */}
+      {Math.round(scrollPos) < state.movies.length && (
       <div className="absolute bottom-16 left-1/2 -translate-x-1/2 text-center pointer-events-none w-full px-4 z-30">
         <AnimatePresence mode="wait">
           {!state.isDetailsOpen && (
@@ -282,6 +353,7 @@ const App = () => {
           )}
         </AnimatePresence>
       </div>
+      )}
 
       {/* Slide-in Detail Panel */}
       <AnimatePresence>

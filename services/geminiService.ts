@@ -84,21 +84,26 @@ export const fetchMovieData = async (): Promise<MovieDataResponse | null> => {
 
   try {
     const prompt = `
-      You are the curator of the "Eternal Cinema Hall", an infinite art gallery.
-      Generate a list of 16 highly acclaimed movies.
+      You are the curator of "Eternal Cinema Hall".
+      Generate a curated list of 10 unique, visually distinct movies.
       
       Requirements:
-      - Select a diverse mix of classics, modern masterpieces, animation, and international cinema.
-      - Ensure they are visually distinct and thematically deep.
-      - Do NOT repeat common blockbusters unless they have high artistic merit.
+      - 10 movies total.
+      - Diverse mix (animation, sci-fi, classics).
+      - NO duplicates from standard blockbusters unless unique.
+      
+      Data Constraints (CRITICAL for speed):
+      - "visual_metaphor": Max 12 words.
+      - "art_note": Max 30 words per language. Concise and poetic.
+      - "key_element": Max 2 words (e.g. "Rose").
       
       For each movie, provide:
-      1. Core emotion (dual language)
-      2. A visual metaphor (poetic description)
-      3. A key element (prop/symbol) - Must be short (e.g. "Rose", "Sword")
-      4. A Haiku (3 lines, Chinese and English translation)
-      5. Color palette (3 hex codes)
-      6. Art note explaining the metaphor (dual language).
+      1. Core emotion
+      2. Visual metaphor
+      3. Key element
+      4. Haiku (3 lines)
+      5. Color palette (3 hex)
+      6. Brief Art note
     `;
 
     const response = await ai.models.generateContent({
@@ -107,7 +112,7 @@ export const fetchMovieData = async (): Promise<MovieDataResponse | null> => {
       config: {
         responseMimeType: "application/json",
         responseSchema: movieSchema,
-        temperature: 1.1, // High creativity
+        temperature: 1.0, // Reduced slightly for speed/stability
       },
     });
 
@@ -125,8 +130,8 @@ export const fetchMovieData = async (): Promise<MovieDataResponse | null> => {
 
     // Assign incremental IDs to ensure order in 3D space
     if (data.movies) {
-      // We initially give them 1-16, but the App will re-index them to append to the list
-      data.movies = data.movies.slice(0, 16).map((m, index) => ({ ...m, id: index + 1 }));
+      // We initially give them 1-10
+      data.movies = data.movies.map((m, index) => ({ ...m, id: index + 1 }));
     }
     
     return data;

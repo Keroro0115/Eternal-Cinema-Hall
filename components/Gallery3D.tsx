@@ -1,7 +1,7 @@
 
 import React, { useRef, useMemo, useState, useEffect } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { Float, Html, Cylinder, Box, Sphere, Torus, Cone, Capsule, Icosahedron, Octahedron, Environment, Stars, SpotLight, Text } from '@react-three/drei';
+import { Float, Html, Cylinder, Box, Sphere, Torus, Cone, Capsule, Icosahedron, Octahedron, Environment, Stars, SpotLight, Text, Sparkles } from '@react-three/drei';
 import * as THREE from 'three';
 import { MovieArt } from '../types';
 
@@ -10,6 +10,7 @@ interface Gallery3DProps {
   scrollPos: number; // 0 to movies.length
   isDetailsOpen: boolean;
   onItemClick: (index: number) => void;
+  onRestart: () => void;
 }
 
 const ITEM_SPACING = 8;
@@ -29,7 +30,7 @@ const damp = (current: number, target: number, lambda: number, delta: number) =>
     return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-lambda * delta));
 };
 
-export const Gallery3D: React.FC<Gallery3DProps> = ({ movies, scrollPos, isDetailsOpen, onItemClick }) => {
+export const Gallery3D: React.FC<Gallery3DProps> = ({ movies, scrollPos, isDetailsOpen, onItemClick, onRestart }) => {
   const { camera } = useThree();
   const smoothScroll = useRef(scrollPos);
   
@@ -43,6 +44,9 @@ export const Gallery3D: React.FC<Gallery3DProps> = ({ movies, scrollPos, isDetai
   const currentIndex = Math.round(scrollPos);
   const safeIndex = Math.min(Math.max(currentIndex, 0), movies.length - 1);
   const activeMovieColor = movies[safeIndex]?.color_palette?.[0] || '#ffffff';
+
+  // Check if we are at the portal (end of list)
+  const isPortal = currentIndex >= movies.length;
 
   useFrame((state, delta) => {
     // Cap delta to prevent instability on lag spikes
@@ -69,7 +73,15 @@ export const Gallery3D: React.FC<Gallery3DProps> = ({ movies, scrollPos, isDetai
     const detailCamX = isLeftMovie ? (activeMovieX + 3.5) : (activeMovieX - 3.5);
 
     // Determine target X
-    const targetX = isDetailsOpen ? detailCamX : corridorCamPos.x;
+    // If we are at the portal, align to center. 
+    // If details are open and NOT at portal, align to detail view.
+    // Otherwise, standard corridor walk.
+    let targetX = corridorCamPos.x;
+    if (isPortal) {
+        targetX = corridorCamPos.x; // Keep center alignment for portal
+    } else if (isDetailsOpen) {
+        targetX = detailCamX;
+    }
 
     // Apply Camera Position with Damping
     camera.position.x = damp(camera.position.x, targetX, 4, step);
@@ -84,7 +96,8 @@ export const Gallery3D: React.FC<Gallery3DProps> = ({ movies, scrollPos, isDetai
     targetLookAt.x += Math.sin(state.clock.elapsedTime * 0.2) * 2;
     
     // When details are open, bias the look target towards the movie to frame it better
-    if (isDetailsOpen) {
+    // Do NOT bias if we are looking at the portal
+    if (isDetailsOpen && !isPortal) {
         // We gently pull the look target towards the movie horizontal center
         targetLookAt.x = THREE.MathUtils.lerp(targetLookAt.x, activeMovieX, 0.5);
     }
@@ -130,7 +143,10 @@ export const Gallery3D: React.FC<Gallery3DProps> = ({ movies, scrollPos, isDetai
       </mesh>
       
       <FollowCameraGrid />
-      <CorridorStructure length={movies.length + 5} />
+      
+      {/* Extend corridor structure to accommodate portal */}
+      <CorridorStructure length={movies.length + 8} />
+      
       <AtmosphereParticles targetColor={activeMovieColor} />
 
       {movies.map((movie, index) => {
@@ -163,11 +179,227 @@ export const Gallery3D: React.FC<Gallery3DProps> = ({ movies, scrollPos, isDetai
           />
         );
       })}
+
+      {/* THE CINEMA GATE */}
+      <PortalDoor 
+        index={movies.length} 
+        onEnter={onRestart} 
+        isActive={isPortal}
+      />
     </>
   );
 };
 
 // --- Subcomponents ---
+
+// Generate a procedural halftone/noise texture for the door
+const createHalftoneTexture = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return new THREE.Texture();
+
+    // 1. Fill Black
+    ctx.fillStyle = '#050505';
+    ctx.fillRect(0, 0, 512, 512);
+
+    // 2. Add Noise/Dust
+    for (let i = 0; i < 5000; i++) {
+        const x = Math.random() * 512;
+        const y = Math.random() * 512;
+        const size = Math.random() * 1.5;
+        const opacity = Math.random() * 0.1;
+        ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`;
+        ctx.beginPath();
+        ctx.arc(x, y, size, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // 3. Add Halftone Grid Pattern
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+    const spacing = 4;
+    for (let y = 0; y < 512; y += spacing) {
+        for (let x = 0; x < 512; x += spacing) {
+             if ((x + y) % (spacing * 2) === 0) {
+                 ctx.fillRect(x, y, 1, 1);
+             }
+        }
+    }
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    return tex;
+};
+
+const PortalDoor = ({ index, onEnter, isActive }: { index: number, onEnter: () => void, isActive: boolean }) => {
+    const pos = getPathPoint(index);
+    const nextPos = getPathPoint(index + 1);
+    
+    // Orient the portal group to face the path direction
+    const dummy = new THREE.Object3D();
+    dummy.position.copy(pos);
+    dummy.lookAt(nextPos);
+    
+    const groupRef = useRef<THREE.Group>(null);
+    const { camera } = useThree();
+    const [visiblityOpacity, setVisibilityOpacity] = useState(0);
+
+    // Generate texture once
+    const noiseTexture = useMemo(() => createHalftoneTexture(), []);
+
+    useFrame(() => {
+        if (!groupRef.current) return;
+        
+        // Calculate distance from camera to the door
+        const dist = camera.position.distanceTo(groupRef.current.position);
+        
+        const fadeStart = 25;
+        const fadeEnd = 8; // Slightly closer fade end
+        
+        // Linear interpolation for opacity
+        const opacity = THREE.MathUtils.clamp(1 - (dist - fadeEnd) / (fadeStart - fadeEnd), 0, 1);
+        
+        if (Math.abs(opacity - visiblityOpacity) > 0.05) {
+            setVisibilityOpacity(opacity);
+        }
+
+        groupRef.current.visible = opacity > 0.01;
+
+        groupRef.current.traverse((child) => {
+            if (child instanceof THREE.Mesh) {
+                const material = child.material as THREE.MeshStandardMaterial;
+                if (material) {
+                    material.transparent = true;
+                    // Cap opacity at 0.95 to keep the transparent/ghostly feel user requested
+                    material.opacity = opacity * 0.95; 
+                }
+            }
+        });
+    });
+
+    return (
+        <group 
+            ref={groupRef}
+            position={[pos.x, pos.y + 1.5, pos.z]} 
+            rotation={[dummy.rotation.x, dummy.rotation.y, dummy.rotation.z]} 
+        >
+             {/* Rotate 180 deg to face camera */}
+             <group rotation={[0, Math.PI, 0]}>
+                
+                {/* 1. The Monolith Doors with Texture */}
+                {/* Left Panel */}
+                <group position={[-1.4, 0, 0.2]}>
+                    <mesh>
+                        <boxGeometry args={[2.5, 7.5, 0.2]} />
+                        <meshStandardMaterial 
+                            map={noiseTexture}
+                            color="#111" 
+                            roughness={0.8} 
+                            metalness={0.2}
+                            transparent
+                        />
+                    </mesh>
+                    {/* Art Deco Decoration Lines (Left) */}
+                    <mesh position={[0.5, 0, 0.11]}>
+                         <boxGeometry args={[0.05, 7, 0.01]} />
+                         <meshStandardMaterial color="#444" roughness={0.5} metalness={0.8} />
+                    </mesh>
+                    <mesh position={[-0.5, 0, 0.11]}>
+                         <boxGeometry args={[0.05, 7, 0.01]} />
+                         <meshStandardMaterial color="#444" roughness={0.5} metalness={0.8} />
+                    </mesh>
+                </group>
+
+                {/* Right Panel */}
+                <group position={[1.4, 0, 0.2]}>
+                    <mesh>
+                        <boxGeometry args={[2.5, 7.5, 0.2]} />
+                        <meshStandardMaterial 
+                            map={noiseTexture}
+                            color="#111" 
+                            roughness={0.8} 
+                            metalness={0.2}
+                            transparent
+                        />
+                    </mesh>
+                    {/* Art Deco Decoration Lines (Right) */}
+                    <mesh position={[0.5, 0, 0.11]}>
+                         <boxGeometry args={[0.05, 7, 0.01]} />
+                         <meshStandardMaterial color="#444" roughness={0.5} metalness={0.8} />
+                    </mesh>
+                    <mesh position={[-0.5, 0, 0.11]}>
+                         <boxGeometry args={[0.05, 7, 0.01]} />
+                         <meshStandardMaterial color="#444" roughness={0.5} metalness={0.8} />
+                    </mesh>
+                </group>
+                
+                {/* 2. Outer Frame Border (Thin lines) */}
+                <mesh position={[0, 3.8, 0.2]}>
+                    <boxGeometry args={[6, 0.1, 0.3]} />
+                    <meshStandardMaterial color="#222" metalness={0.5} />
+                </mesh>
+                <mesh position={[0, -3.8, 0.2]}>
+                    <boxGeometry args={[6, 0.1, 0.3]} />
+                    <meshStandardMaterial color="#222" metalness={0.5} />
+                </mesh>
+                <mesh position={[-2.9, 0, 0.2]}>
+                    <boxGeometry args={[0.1, 7.7, 0.3]} />
+                    <meshStandardMaterial color="#222" metalness={0.5} />
+                </mesh>
+                <mesh position={[2.9, 0, 0.2]}>
+                    <boxGeometry args={[0.1, 7.7, 0.3]} />
+                    <meshStandardMaterial color="#222" metalness={0.5} />
+                </mesh>
+
+                {/* 3. The Gap / Void (Clickable Area) */}
+                <mesh 
+                    position={[0, 0, 0.15]} 
+                    onClick={onEnter} 
+                    onPointerOver={() => document.body.style.cursor = 'pointer'} 
+                    onPointerOut={() => document.body.style.cursor = 'auto'}
+                >
+                    <planeGeometry args={[5.5, 7.5]} />
+                    <meshBasicMaterial color="#000" transparent opacity={0} /> {/* Invisible Hitbox */}
+                </mesh>
+
+                {/* 4. Subtle Inner Glow from the crack */}
+                <mesh position={[0, 0, 0.21]}>
+                    <planeGeometry args={[0.15, 7.5]} />
+                    <meshBasicMaterial color="#d4af37" transparent opacity={visiblityOpacity * 0.4} blending={THREE.AdditiveBlending} />
+                </mesh>
+
+                {/* 5. Text Overlay - Fades in via CSS opacity */}
+                <Html 
+                    transform 
+                    position={[0, 0, 0.6]} 
+                    center 
+                    style={{ 
+                        pointerEvents: 'none', 
+                        opacity: visiblityOpacity, 
+                        transition: 'opacity 0.2s linear' 
+                    }}
+                >
+                  <div className="flex flex-col items-center justify-center text-center select-none w-64">
+                    <h2 className="text-2xl font-serif text-white/90 tracking-[0.6em] uppercase font-bold drop-shadow-2xl">
+                        THE END
+                    </h2>
+                    <div className="h-px w-8 bg-white/20 my-3"></div>
+                    <button 
+                        className="pointer-events-auto px-4 py-1.5 border border-white/10 hover:bg-white/5 hover:border-cinema-gold text-white/50 hover:text-white text-[9px] tracking-[0.3em] uppercase transition-all duration-500 rounded-sm"
+                        onClick={onEnter}
+                        style={{ pointerEvents: visiblityOpacity > 0.8 ? 'auto' : 'none' }}
+                    >
+                        Return
+                    </button>
+                  </div>
+                </Html>
+
+             </group>
+        </group>
+    )
+}
 
 const FollowCameraGrid = () => {
     const gridRef = useRef<THREE.Group>(null);
@@ -398,8 +630,6 @@ const MoviePanel: React.FC<MoviePanelProps> = ({
                 </Float>
             </group>
             
-            {/* REMOVED BACK ICON GROUP HERE */}
-
             {/* --- SIDE A: Procedural Poster (Front) --- */}
             <group position={[0, 0, 0.06]}>
                 
@@ -509,14 +739,6 @@ const generatePosterTexture = (movie: MovieArt): THREE.CanvasTexture => {
     
     ctx.restore();
 
-    // Noise Overlay
-    // ctx.globalAlpha = 0.1;
-    // for(let i=0; i<10000; i++) {
-    //     ctx.fillStyle = Math.random() > 0.5 ? '#fff' : '#000';
-    //     ctx.fillRect(Math.random()*width, Math.random()*height, 2, 2);
-    // }
-    // ctx.globalAlpha = 1.0;
-
     // Typography (Swiss/International Style)
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
@@ -569,7 +791,8 @@ const ProceduralPoster = ({ movie, isActive }: { movie: MovieArt, isActive: bool
         // Subtle shimmer effect
         if (isActive) {
              const time = state.clock.elapsedTime;
-             meshRef.current.material.opacity = 0.9 + Math.sin(time * 2) * 0.05;
+             const material = meshRef.current.material as THREE.MeshBasicMaterial;
+             material.opacity = 0.9 + Math.sin(time * 2) * 0.05;
         }
     });
 
